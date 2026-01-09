@@ -1,0 +1,1 @@
+BOT_NAME = "FXPro GPT Bot"
