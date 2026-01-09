@@ -14,6 +14,9 @@ from app.users.trade_settings import TradeSettings
 from app.mt5.connector import connect
 from app.utils.crypto import encrypt
 
+from app.risk.risk_state import RiskState
+from app.risk.risk_engine import RiskEngine
+
 load_dotenv()
 
 bot = Bot(token=os.getenv("BOT_TOKEN"))
@@ -23,11 +26,15 @@ users = UserManager()
 sessions = SessionStore()
 trade_settings = TradeSettings()
 
+risk_state = RiskState()
+risk_engine = RiskEngine(risk_state)
+
 
 @dp.message_handler(commands=["start"])
 async def start(msg: types.Message):
     users.create_user(msg.from_user.id)
     trade_settings.init_user(msg.from_user.id)
+    risk_state.init_user(msg.from_user.id)
     await msg.answer("Добро пожаловать", reply_markup=start_keyboard())
 
 
@@ -65,44 +72,32 @@ async def get_password(msg: types.Message, state: FSMContext):
     await state.finish()
 
 
-@dp.message_handler(lambda m: m.text == "📊 Пары")
-async def set_pairs(msg: types.Message):
-    await msg.answer("Введите пары через запятую (пример: EURUSD,XAUUSD)")
-    await TradeSettingsState.waiting_pairs.set()
+@dp.message_handler(lambda m: m.text == "▶️ Запуск")
+async def try_start_trading(msg: types.Message):
+    session = sessions.get(msg.from_user.id)
+    settings = trade_settings.get(msg.from_user.id)
 
+    if not session:
+        await msg.answer("❌ Счёт не подключён")
+        return
 
-@dp.message_handler(state=TradeSettingsState.waiting_pairs)
-async def save_pairs(msg: types.Message, state: FSMContext):
-    pairs = [p.strip().upper() for p in msg.text.split(",")]
-    trade_settings.set_pairs(msg.from_user.id, pairs)
-    await msg.answer(f"✅ Пары сохранены: {pairs}")
-    await state.finish()
+    balance = 5000  # временно mock
 
+    allowed, reason = risk_engine.can_trade(msg.from_user.id, balance)
+    if not allowed:
+        await msg.answer(f"⛔ Торговля запрещена: {reason}")
+        return
 
-@dp.message_handler(lambda m: m.text == "📈 Плечо")
-async def set_leverage(msg: types.Message):
-    await msg.answer("Введите плечо (100 / 200 / 500)")
-    await TradeSettingsState.waiting_leverage.set()
+    lot = risk_engine.calculate_lot(
+        balance=balance,
+        risk_percent=settings["risk"]
+    )
 
-
-@dp.message_handler(state=TradeSettingsState.waiting_leverage)
-async def save_leverage(msg: types.Message, state: FSMContext):
-    trade_settings.set_leverage(msg.from_user.id, int(msg.text))
-    await msg.answer(f"✅ Плечо установлено: 1:{msg.text}")
-    await state.finish()
-
-
-@dp.message_handler(lambda m: m.text == "💰 Риск")
-async def set_risk(msg: types.Message):
-    await msg.answer("Введите риск на сделку (%)")
-    await TradeSettingsState.waiting_risk.set()
-
-
-@dp.message_handler(state=TradeSettingsState.waiting_risk)
-async def save_risk(msg: types.Message, state: FSMContext):
-    trade_settings.set_risk(msg.from_user.id, float(msg.text))
-    await msg.answer(f"✅ Риск установлен: {msg.text}%")
-    await state.finish()
+    await msg.answer(
+        f"▶️ Торговля разрешена\n"
+        f"Лот рассчитан: {lot}\n"
+        f"Риск: {settings['risk']}%"
+    )
 
 
 def start_bot():
